@@ -2712,7 +2712,7 @@ var _ = Describe("[sig-compute]Configurations", decorators.SigCompute, func() {
 					if len(pid) == 0 {
 						continue
 					}
-					output, err = tests.GetProcessName(readyPod, pid)
+					output, err = GetProcessName(readyPod, pid)
 					if err != nil {
 						getProcessNameErrors++
 						continue
@@ -3390,4 +3390,29 @@ func createBlockDataVolume(virtClient kubecli.KubevirtClient) (*cdiv1.DataVolume
 	)
 
 	return virtClient.CdiClient().CdiV1beta1().DataVolumes(testsuite.GetTestNamespace(nil)).Create(context.Background(), dataVolume, metav1.CreateOptions{})
+}
+
+func GetProcessName(pod *k8sv1.Pod, pid string) (string, error) {
+	if pid == "" {
+		return "", fmt.Errorf("PID cannot be empty")
+	}
+
+	virtClient, err := kubecli.GetKubevirtClient()
+	if err != nil {
+		return "", fmt.Errorf("failed to get KubeVirt client: %w", err)
+	}
+
+	fPath := "/proc/" + pid + "/comm"
+	cmd := []string{"cat", fPath}
+	output, err := exec.ExecuteCommandOnPod(
+		virtClient,
+		pod,
+		"compute",
+		cmd,
+	)
+	if err != nil {
+		return "", fmt.Errorf("failed to execute command '%v' on pod '%s/%s': %w", cmd, pod.Namespace, pod.Name, err)
+	}
+
+	return output, nil
 }
