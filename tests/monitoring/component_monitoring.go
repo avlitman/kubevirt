@@ -120,11 +120,13 @@ var _ = Describe("[sig-monitoring]Component Monitoring", Serial, decorators.SigM
 		})
 
 		It("VirtOperatorDown and NoReadyVirtOperator should be triggered when virt-operator is down", func() {
+			scales.UpdateScale(virtOperator.deploymentName, int32(0))
 			libmonitoring.VerifyAlertExist(virtClient, virtOperator.downAlert)
 			libmonitoring.VerifyAlertExist(virtClient, virtOperator.noReadyAlert)
 		})
 
 		It("LowVirtOperatorCount should be triggered when virt-operator count is low", decorators.RequiresTwoSchedulableNodes, func() {
+			scales.UpdateScale(virtOperator.deploymentName, int32(0))
 			libmonitoring.VerifyAlertExist(virtClient, virtOperator.lowCountAlert)
 		})
 
