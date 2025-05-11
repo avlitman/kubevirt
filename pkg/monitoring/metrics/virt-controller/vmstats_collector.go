@@ -20,23 +20,29 @@
 package virt_controller
 
 import (
+	"context"
+	"encoding/json"
 	"strings"
 
 	"github.com/machadovilaca/operator-observability/pkg/operatormetrics"
 	k8sv1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
 	k6tv1 "kubevirt.io/api/core/v1"
 	instancetypeapi "kubevirt.io/api/instancetype"
 	"kubevirt.io/client-go/log"
 
+	"kubevirt.io/client-go/kubecli"
+
 	"kubevirt.io/kubevirt/pkg/controller"
+	"kubevirt.io/kubevirt/pkg/network/multus"
 )
 
 var (
 	vmStatsCollector = operatormetrics.Collector{
-		Metrics:         append(timestampMetrics, vmResourceRequests, vmResourceLimits, vmInfo, vmDiskAllocatedSize, vmCreationTimestamp, vmVnicInfo),
+		Metrics:         append(timestampMetrics, vmResourceRequests, vmResourceLimits, vmInfo, vmDiskAllocatedSize, vmCreationTimestamp, vmVnicInfo, vmNadInfo),
 		CollectCallback: vmStatsCollectorCallback,
 	}
 
@@ -186,6 +192,14 @@ var (
 		},
 		[]string{"name", "namespace", "vnic_name", "binding_type", "network", "binding_name"},
 	)
+
+	vmNadInfo = operatormetrics.NewGaugeVec(
+		operatormetrics.MetricOpts{
+			Name: "kubevirt_vm_network_attachment_definition_info",
+			Help: "Information about additional network interfaces attached to the VM",
+		},
+		[]string{"name", "namespace", "network", "vlan_name", "cni_type", "ipam_type", "subnets"},
+	)
 )
 
 func vmStatsCollectorCallback() []operatormetrics.CollectorResult {
@@ -208,6 +222,7 @@ func vmStatsCollectorCallback() []operatormetrics.CollectorResult {
 	results = append(results, reportVmsStats(vms)...)
 	results = append(results, collectVMCreationTimestamp(vms)...)
 	results = append(results, CollectVmsVnicInfo(vms)...)
+	results = append(results, CollectVmsNadInfo(vms)...)
 	return results
 }
 
@@ -689,7 +704,7 @@ func CollectVmsVnicInfo(vms []*k6tv1.VirtualMachine) []operatormetrics.Collector
 
 		for _, iface := range interfaces {
 			bindingType, bindingName := getBinding(iface)
-			networkName, matchFound := getNetworkName(iface.Name, networks)
+			networkName, matchFound := getNetworkName(iface.Name, vm.Namespace, networks)
 
 			if !matchFound {
 				continue
@@ -732,12 +747,13 @@ func getBinding(iface k6tv1.Interface) (bindingType, bindingName string) {
 	return bindingType, bindingName
 }
 
-func getNetworkName(ifaceName string, networks []k6tv1.Network) (string, bool) {
+func getNetworkName(ifaceName, namespace string, networks []k6tv1.Network) (string, bool) {
 	if net := LookupNetworkByName(networks, ifaceName); net != nil {
 		if net.Pod != nil {
 			return "pod networking", true
 		} else if net.Multus != nil {
-			return net.Multus.NetworkName, true
+			netName := multus.NetAttachDefNamespacedName(namespace, net.Multus.NetworkName)
+			return netName.Name, true
 		}
 	}
 	return "", false
@@ -750,4 +766,82 @@ func LookupNetworkByName(networks []k6tv1.Network, name string) *k6tv1.Network {
 		}
 	}
 	return nil
+}
+
+func CollectVmsNadInfo(vms []*k6tv1.VirtualMachine) []operatormetrics.CollectorResult {
+	var cr []operatormetrics.CollectorResult
+
+	virtClient, err := kubecli.GetKubevirtClient()
+	if err != nil {
+		return cr
+	}
+
+	for _, vm := range vms {
+		for _, network := range vm.Spec.Template.Spec.Networks {
+			if network.Multus == nil {
+				continue
+			}
+
+			networkName, vlanName, cniType, ipamType, subnets := getNetworkConfigInfo(virtClient, vm.Namespace, network.Multus.NetworkName)
+			if networkName == "" {
+				continue
+			}
+
+			cr = append(cr, operatormetrics.CollectorResult{
+				Metric: vmNadInfo,
+				Labels: []string{
+					vm.Name,
+					vm.Namespace,
+					networkName,
+					vlanName,
+					cniType,
+					ipamType,
+					subnets,
+				},
+				Value: 1.0,
+			})
+		}
+	}
+	return cr
+}
+
+func getNetworkConfigInfo(virtClient kubecli.KubevirtClient, namespace, networkName string) (string, string, string, string, string) {
+	nadNamespacedName := multus.NetAttachDefNamespacedName(namespace, networkName)
+	netAttachDef, err := virtClient.NetworkClient().
+		K8sCniCncfIoV1().
+		NetworkAttachmentDefinitions(nadNamespacedName.Namespace).
+		Get(context.Background(), nadNamespacedName.Name, metav1.GetOptions{})
+	if err != nil {
+		return "", "", "", "", ""
+	}
+
+	var configMap map[string]interface{}
+	err = json.Unmarshal([]byte(netAttachDef.Spec.Config), &configMap)
+	if err != nil {
+		return "", "", "", "", ""
+	}
+
+	vlanName := ""
+	if name, ok := configMap["name"].(string); ok {
+		vlanName = name
+	}
+
+	cniType := ""
+	if t, ok := configMap["type"].(string); ok {
+		cniType = t
+	}
+
+	ipamType := ""
+	if ipam, ok := configMap["ipam"].(map[string]interface{}); ok {
+		if ipamT, ok := ipam["type"].(string); ok {
+			ipamType = ipamT
+		}
+	}
+
+	subnets := "false"
+	if strings.Contains(netAttachDef.Spec.Config, `"subnet":`) {
+		subnets = "true"
+	}
+
+	return netAttachDef.Name, vlanName, cniType, ipamType, subnets
 }

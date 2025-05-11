@@ -23,6 +23,8 @@ import (
 	"strconv"
 	"strings"
 
+	"kubevirt.io/client-go/kubecli"
+
 	"github.com/machadovilaca/operator-observability/pkg/operatormetrics"
 	k8sv1 "k8s.io/api/core/v1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -59,6 +61,7 @@ var (
 			vmiMigrationStartTime,
 			vmiMigrationEndTime,
 			vmiVnicInfo,
+			vmiNadInfo,
 		},
 		CollectCallback: vmiStatsCollectorCallback,
 	}
@@ -126,6 +129,14 @@ var (
 		},
 		[]string{"name", "namespace", "vnic_name", "binding_type", "network", "binding_name"},
 	)
+
+	vmiNadInfo = operatormetrics.NewGaugeVec(
+		operatormetrics.MetricOpts{
+			Name: "kubevirt_vmi_network_attachment_definition_info",
+			Help: "Information about additional network interfaces attached to the VirtualMachineInstance (VMI)",
+		},
+		[]string{"name", "namespace", "network", "vlan_name", "cni_type", "ipam_type", "subnets"},
+	)
 )
 
 func vmiStatsCollectorCallback() []operatormetrics.CollectorResult {
@@ -153,6 +164,7 @@ func reportVmisStats(vmis []*k6tv1.VirtualMachineInstance) []operatormetrics.Col
 		crs = append(crs, collectVMIInterfacesInfo(vmi)...)
 		crs = append(crs, collectVMIMigrationTime(vmi)...)
 		crs = append(crs, CollectVmisVnicInfo(vmi)...)
+		crs = append(crs, CollectVmiNadInfo(vmi)...)
 	}
 
 	return crs
@@ -446,7 +458,7 @@ func CollectVmisVnicInfo(vmi *k6tv1.VirtualMachineInstance) []operatormetrics.Co
 
 	for _, iface := range interfaces {
 		bindingType, bindingName := getBinding(iface)
-		networkName, matchFound := getNetworkName(iface.Name, networks)
+		networkName, matchFound := getNetworkName(iface.Name, vmi.Namespace, networks)
 
 		if !matchFound {
 			continue
@@ -467,4 +479,39 @@ func CollectVmisVnicInfo(vmi *k6tv1.VirtualMachineInstance) []operatormetrics.Co
 	}
 
 	return results
+}
+
+func CollectVmiNadInfo(vmi *k6tv1.VirtualMachineInstance) []operatormetrics.CollectorResult {
+	var cr []operatormetrics.CollectorResult
+
+	virtClient, err := kubecli.GetKubevirtClient()
+	if err != nil {
+		return cr
+	}
+
+	for _, network := range vmi.Spec.Networks {
+		if network.Multus == nil {
+			continue
+		}
+
+		networkName, vlanName, cniType, ipamType, subnets := getNetworkConfigInfo(virtClient, vmi.Namespace, network.Multus.NetworkName)
+		if networkName == "" {
+			continue
+		}
+
+		cr = append(cr, operatormetrics.CollectorResult{
+			Metric: vmiNadInfo,
+			Labels: []string{
+				vmi.Name,
+				vmi.Namespace,
+				networkName,
+				vlanName,
+				cniType,
+				ipamType,
+				subnets,
+			},
+			Value: 1.0,
+		})
+	}
+	return cr
 }

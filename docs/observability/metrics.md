@@ -99,6 +99,9 @@ Information about Virtual Machines. Type: Gauge.
 ### kubevirt_vm_migrating_status_last_transition_timestamp_seconds
 Virtual Machine last transition timestamp to migrating status. Type: Counter.
 
+### kubevirt_vm_network_attachment_definition_info
+Information about additional network interfaces attached to the VM Type: Gauge.
+
 ### kubevirt_vm_non_running_status_last_transition_timestamp_seconds
 Virtual Machine last transition timestamp to paused/stopped status. Type: Counter.
 
@@ -218,6 +221,9 @@ Number of current scheduling migrations. Type: Gauge.
 
 ### kubevirt_vmi_migrations_in_unset_phase
 Number of current unset migrations. These are pending items the virt-controller hasn’t processed yet from the queue. Type: Gauge.
+
+### kubevirt_vmi_network_attachment_definition_info
+Information about additional network interfaces attached to the VirtualMachineInstance (VMI) Type: Gauge.
 
 ### kubevirt_vmi_network_receive_bytes_total
 Total network traffic received in bytes. Type: Counter.
